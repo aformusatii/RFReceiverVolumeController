@@ -30,19 +30,27 @@ extern "C" {
 #define VC0 4
 #define VC1 5
 
+#define PT2257_ADDR  0b10001000
+#define START 		 0x08
+#define MT_SLA_ACK	 0x18   //slave ACK has been received
+#define MT_DATA_ACK	 0x28   //master ACK has been received
+#define VOLUME_MAX   79
+
 /********************************************************************************
 	Function Prototypes
 ********************************************************************************/
 void initGPIO();
 void send_spi(uint16_t data);
 void sendVolume();
+void initTWI();
 
 /********************************************************************************
 	Global Variables
 ********************************************************************************/
 RF24 radio;
 const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
-volatile uint8_t volume = 0;
+volatile uint8_t volume = VOLUME_MAX;
+bool volChanged = false;
 
 /********************************************************************************
 	Interrupt Service
@@ -62,19 +70,25 @@ ISR(INT0_vect)
         uint8_t len = radio.getDynamicPayloadSize();
         radio.read(data, len);
 
+        printf("\nRX %d", data[0]);
+
 		if (data[0] == 100) {
-			if (volume != 255) {
-				volume+=5;
+			if (volume > 0) {
+				volume-=1;
 			}
 		} else if (data[0] == 101) {
-			if (volume != 0) {
-				volume-=5;
+			if (volume < VOLUME_MAX) {
+				volume+=1;
 			}
 		} else if (data[0] == 102) {
 			volume = data[1];
 		}
 
-		sendVolume();
+		if (volume > VOLUME_MAX) {
+			volume = VOLUME_MAX;
+		}
+
+		volChanged = true;
 
         radio.flush_rx();
     }
@@ -90,11 +104,10 @@ int main(void) {
     // Init GPIO
     initGPIO();
 
+    initTWI();
+
     // enable interrupts
     sei();
-
-    // set default volume
-    sendVolume();
 
 	// Console friendly output
     printf(CONSOLE_PREFIX);
@@ -112,10 +125,19 @@ int main(void) {
 
     radio.printDetails();
 
+    // set default volume
+    sendVolume();
+
 	// main loop
     while (1) {
     	// main usart loop for console
     	usart_check_loop();
+
+    	if (volChanged) {
+    		sendVolume();
+    		volChanged = false;
+    	}
+
     }
 }
 
@@ -139,14 +161,80 @@ void initGPIO() {
     _off(PC1, PORTC); // SCK default 0
 }
 
+void initTWI() {
+    //set SCL to ?kHz
+    TWSR = (1<<TWPS1)|(0<<TWPS0); // Prescaler Value = 16
+    TWBR = 0x02;
+
+    //enable TWI
+    TWCR = (1<<TWEN);
+}
+
+void sendTWI() {
+
+    uint8_t b = volume/10 & 0b0000111;  //get the most significant digit (eg. 79 gets 7) and limit the most significant digit to 3 bit (7)
+    uint8_t a = volume%10;  //get the least significant digit (eg. 79 gets 9)
+
+	// Send START condition
+	TWCR = (1<<TWINT)|(1<<TWSTA)|(1<<TWEN);
+
+	// Wait for TWINT Flag set. This indicates that the START condition has been transmitted
+	while ((TWCR & (1<<TWINT)) == 0);
+
+
+	if ((TWSR & 0xF8) != START) {
+		printf("\nFailed START");
+	 	return;
+	}
+
+	//Load SLA_W into TWDR Register. Clear TWINT bit in TWCR to start transmission of address
+	TWDR = PT2257_ADDR;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+
+	// Wait for TWINT Flag set. This indicates that the SLA+W has been transmitted, and ACK/NACK has been received.
+	while ((TWCR & (1<<TWINT)) == 0);
+
+	if ((TWSR & 0xF8) != MT_SLA_ACK) {
+		printf("\nFailed MT_SLA_ACK");
+	 	return;
+	}
+
+	// Load DATA1 into TWDR Register. Clear TWINT bit in TWCR to start transmission of data
+	TWDR = 0b11100000 | b;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+
+	// Wait for TWINT Flag set. This indicates that the DATA has been transmitted, and ACK/NACK has been received.
+	while ((TWCR & (1<<TWINT)) == 0);
+
+	if ((TWSR & 0xF8) != MT_DATA_ACK) {
+		printf("\nFailed MT_DATA_ACK 1");
+	 	return;
+	}
+
+	// Load DATA2 into TWDR Register. Clear TWINT bit in TWCR to start transmission of data
+	TWDR = 0b11010000 | a;
+	TWCR = (1<<TWINT)|(1<<TWEN);
+
+	// Wait for TWINT Flag set. This indicates that the DATA has been transmitted, and ACK/NACK has been received.
+	while ((TWCR & (1<<TWINT)) == 0);
+
+	if ((TWSR & 0xF8) != MT_DATA_ACK) {
+		printf("\nFailed MT_DATA_ACK 2");
+	 	return;
+	}
+
+	// Transmit STOP condition
+	TWCR = (1<<TWINT)|(1<<TWEN)|(1<<TWSTO);
+}
+
 void handle_usart_cmd(char *cmd, char *args) {
 	if (strcmp(cmd, "test") == 0) {
 		printf("\n TEST [%s]", args);
 	}
 
 	if (strcmp(cmd, "send1") == 0) {
-		transfer_spi(100);
-		transfer_spi(101);
+		printf("\nsendTWI");
+		sendTWI();
 	}
 
 	if (strcmp(cmd, "send2") == 0) {
@@ -188,9 +276,5 @@ void send_spi(uint16_t data) {
 
 void sendVolume() {
 	//printf("\nsend  volume %d", volume);
-
-	uint8_t spi_cmd = (0<<VC1)|(1<<VC0)|(1<<VP1)|(1<<VP0);
-	uint8_t spi_data = volume;
-	uint16_t spi_packet = (((uint16_t) spi_cmd) << 8) | (uint16_t) spi_data;
-	send_spi(spi_packet);
+	sendTWI();
 }
