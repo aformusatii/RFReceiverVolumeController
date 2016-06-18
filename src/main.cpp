@@ -9,10 +9,12 @@
 #include <string.h>
 #include <util/delay.h>
 #include <stdlib.h>
+#include <avr/eeprom.h>
 
 #include "../nrf24l01/RF24.h"
 #include "../common/util.h"
 #include "../nrf24l01/atmega328.h"
+#include "../atmega328/mtimer.h"
 
 extern "C" {
 #include "../atmega328/usart.h"
@@ -36,6 +38,9 @@ extern "C" {
 #define MT_DATA_ACK	 0x28   //master ACK has been received
 #define VOLUME_MAX   79
 
+#define CONTROLLER_CHANNEL 116 // Controller 1 (PC)
+// #define CONTROLLER_CHANNEL 125 // Controller 2 (Bathroom)
+
 /********************************************************************************
 	Function Prototypes
 ********************************************************************************/
@@ -51,6 +56,7 @@ RF24 radio;
 const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 volatile uint8_t volume = VOLUME_MAX;
 bool volChanged = false;
+volatile uint64_t saveVolJob1Cicles = 0;
 
 /********************************************************************************
 	Interrupt Service
@@ -70,7 +76,7 @@ ISR(INT0_vect)
         uint8_t len = radio.getDynamicPayloadSize();
         radio.read(data, len);
 
-        printf("\nRX %d", data[0]);
+        //printf("\nRX %d", data[0]);
 
 		if (data[0] == 100) {
 			if (volume > 0) {
@@ -94,6 +100,11 @@ ISR(INT0_vect)
     }
 }
 
+ISR(TIMER1_OVF_vect)
+{
+	incrementOvf();
+}
+
 /********************************************************************************
 	Main
 ********************************************************************************/
@@ -106,6 +117,8 @@ int main(void) {
 
     initTWI();
 
+    initTimer();
+
     // enable interrupts
     sei();
 
@@ -116,7 +129,7 @@ int main(void) {
     radio.setRetries(15, 15);
     radio.setPayloadSize(8);
     radio.setPALevel(RF24_PA_MAX);
-    radio.setChannel(116);
+	radio.setChannel(CONTROLLER_CHANNEL);
 
     radio.openWritingPipe(pipes[0]);
     radio.openReadingPipe(1, pipes[1]);
@@ -124,6 +137,9 @@ int main(void) {
     radio.startListening();
 
     radio.printDetails();
+
+    // Read saved volume value from EEPROM
+    volume = eeprom_read_byte((uint8_t *) 0);
 
     // set default volume
     sendVolume();
@@ -136,8 +152,20 @@ int main(void) {
     	if (volChanged) {
     		sendVolume();
     		volChanged = false;
+    		saveVolJob1Cicles = convertSecondsToCicles(2); // save volume each 2 seconds
+    		_on(PB0, PORTB);
     	}
 
+    	uint64_t currentTimeCicles = getCurrentTimeCicles();
+
+    	/**
+    	 * --------> Job 1 (Save volume to EEPROM)
+    	 */
+    	if ((saveVolJob1Cicles != 0) && (currentTimeCicles >= saveVolJob1Cicles)) {
+    		_off(PB0, PORTB);
+    		saveVolJob1Cicles = 0;
+    		eeprom_write_byte((uint8_t *) 0, volume);
+    	}
     }
 }
 
@@ -159,6 +187,9 @@ void initGPIO() {
 
     _on(PC2, PORTC); // Default disable CSN
     _off(PC1, PORTC); // SCK default 0
+
+    _out(DDB0, DDRB); // LED1
+    _off(PB0, PORTB); // LED1 default 0
 }
 
 void initTWI() {
