@@ -38,8 +38,8 @@ extern "C" {
 #define MT_DATA_ACK	 0x28   //master ACK has been received
 #define VOLUME_MAX   79
 
-#define CONTROLLER_CHANNEL 116 // Controller 1 (PC)
-// #define CONTROLLER_CHANNEL 125 // Controller 2 (Bathroom)
+// #define CONTROLLER_CHANNEL 116 // Controller 1 (PC)
+#define CONTROLLER_CHANNEL 124 // Controller 2 (Bathroom)
 
 /********************************************************************************
 	Function Prototypes
@@ -48,6 +48,7 @@ void initGPIO();
 void send_spi(uint16_t data);
 void sendVolume();
 void initTWI();
+void initLowVolume();
 
 /********************************************************************************
 	Global Variables
@@ -79,12 +80,12 @@ ISR(INT0_vect)
         //printf("\nRX %d", data[0]);
 
 		if (data[0] == 100) {
-			if (volume > 0) {
-				volume-=1;
+			if (volume > 1) {
+				volume -= 2;
 			}
 		} else if (data[0] == 101) {
 			if (volume < VOLUME_MAX) {
-				volume+=1;
+				volume += 2;
 			}
 		} else if (data[0] == 102) {
 			volume = data[1];
@@ -109,6 +110,7 @@ ISR(TIMER1_OVF_vect)
 	Main
 ********************************************************************************/
 int main(void) {
+
     // initialize usart module
 	usart_init();
 
@@ -122,8 +124,13 @@ int main(void) {
     // enable interrupts
     sei();
 
+    _delay_ms(2000);
+
 	// Console friendly output
     printf(CONSOLE_PREFIX);
+
+    // Set low volume for 10 seconds
+    initLowVolume();
 
     radio.begin();
     radio.setRetries(15, 15);
@@ -308,4 +315,15 @@ void send_spi(uint16_t data) {
 void sendVolume() {
 	//printf("\nsend  volume %d", volume);
 	sendTWI();
+}
+
+void initLowVolume() {
+    volume = 70;
+
+    // set min volume
+    sendVolume();
+
+    for (int i = 0; i < 10; i++) {
+    	_delay_ms(1000);
+    }
 }
