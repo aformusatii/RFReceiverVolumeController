@@ -79,23 +79,27 @@ ISR(INT0_vect)
 
         //printf("\nRX %d", data[0]);
 
-		if (data[0] == 100) {
-			if (volume > 1) {
-				volume -= 2;
-			}
-		} else if (data[0] == 101) {
-			if (volume < VOLUME_MAX) {
-				volume += 2;
-			}
-		} else if (data[0] == 102) {
-			volume = data[1];
-		}
+        if ((len > 3) && (data[0] == 110) && (data[1] == 120) && (data[2] == 130)) {
 
-		if (volume > VOLUME_MAX) {
-			volume = VOLUME_MAX;
-		}
+    		if (data[3] == 100) {
+    			if (volume > 1) {
+    				volume -= 2;
+    			}
+    		} else if (data[3] == 101) {
+    			if (volume < VOLUME_MAX) {
+    				volume += 2;
+    			}
+    		} else if (data[3] == 102) {
+    			volume = data[4];
+    		}
 
-		volChanged = true;
+    		if (volume > VOLUME_MAX) {
+    			volume = VOLUME_MAX;
+    		}
+
+    		volChanged = true;
+
+        }
 
         radio.flush_rx();
     }
